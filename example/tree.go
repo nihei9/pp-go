@@ -7,19 +7,19 @@ type tree struct {
 	children []*tree
 }
 
-func showTree(t *tree) p.Document {
-	return p.Text(t.text, showBracket(t.children))
+func showTree(t *tree) p.Element {
+	return p.Group(p.Join(p.Text(t.text), showBracket(t.children)))
 }
 
-func showBracket(ts []*tree) p.Document {
+func showBracket(ts []*tree) p.Element {
 	if len(ts) == 0 {
 		return nil
 	}
 
-	return p.Text("[", p.Join(p.Line(2, showTrees(ts)), p.Line(0, p.Text("]", nil))))
+	return p.Join(p.Text("["), p.Join(p.Indent(2, p.Join(p.Line(), showTrees(ts))), p.Join(p.Line(), p.Text("]"))))
 }
 
-func showTrees(ts []*tree) p.Document {
+func showTrees(ts []*tree) p.Element {
 	if len(ts) == 0 {
 		return nil
 	}
@@ -28,5 +28,5 @@ func showTrees(ts []*tree) p.Document {
 		return showTree(ts[0])
 	}
 
-	return p.Join(showTree(ts[0]), p.Text(",", p.Line(0, showTrees(ts[1:]))))
+	return p.Join(showTree(ts[0]), p.Join(p.Text(","), p.Join(p.Line(), showTrees(ts[1:]))))
 }
