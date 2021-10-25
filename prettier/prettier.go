@@ -7,9 +7,10 @@ import (
 )
 
 func Pretty(w io.Writer, elem Element, width int) {
-	doc := best(width, 0, []*indentAndElement{
+	doc := format(width, 0, []*fittingElement{
 		{
 			indent:  0,
+			mode:    fittingModeFlat,
 			element: elem,
 		},
 	})
@@ -21,7 +22,6 @@ func Pretty(w io.Writer, elem Element, width int) {
 }
 
 type Element interface {
-	flatten() Element
 }
 
 var (
@@ -42,18 +42,10 @@ func Text(text string) Element {
 	}
 }
 
-func (d *textElement) flatten() Element {
-	return d
-}
-
 type lineElement struct{}
 
 func Line() *lineElement {
 	return &lineElement{}
-}
-
-func (d *lineElement) flatten() Element {
-	return Text(" ")
 }
 
 type indentElement struct {
@@ -76,10 +68,6 @@ func Indent(n int, elem Element) Element {
 	}
 }
 
-func (d *indentElement) flatten() Element {
-	return d.element.flatten()
-}
-
 type joinElement struct {
 	left  Element
 	right Element
@@ -99,13 +87,8 @@ func Join(left, right Element) Element {
 	}
 }
 
-func (d *joinElement) flatten() Element {
-	return Join(d.left.flatten(), d.right.flatten())
-}
-
 type groupElement struct {
-	long  Element
-	short Element
+	element Element
 }
 
 func Group(elem Element) Element {
@@ -114,71 +97,135 @@ func Group(elem Element) Element {
 	}
 
 	return &groupElement{
-		long:  elem.flatten(),
-		short: elem,
+		element: elem,
 	}
 }
 
-func (d *groupElement) flatten() Element {
-	return d.long
-}
+type fittingMode string
 
-type indentAndElement struct {
+const (
+	fittingModeFlat  = "flat"
+	fittingModeBreak = "break"
+)
+
+type fittingElement struct {
 	indent  int
+	mode    fittingMode
 	element Element
 }
 
-func best(width, used int, pairs []*indentAndElement) document {
-	if len(pairs) == 0 {
+func format(width, used int, elems []*fittingElement) document {
+	if len(elems) == 0 {
 		return nil
 	}
 
-	p := pairs[0]
-	switch elem := p.element.(type) {
+	triple := elems[0]
+	switch elem := triple.element.(type) {
 	case *textElement:
-		return text(elem.text, best(width, used+len(elem.text), pairs[1:]))
+		return text(elem.text, format(width, used+len(elem.text), elems[1:]))
 	case *lineElement:
-		return line(p.indent, best(width, p.indent, pairs[1:]))
+		if triple.mode == fittingModeFlat {
+			return text(" ", format(width, used+1, elems[1:]))
+		}
+		return line(triple.indent, format(width, triple.indent, elems[1:]))
 	case *indentElement:
-		return best(width, used, append([]*indentAndElement{
+		return format(width, used, append([]*fittingElement{
 			{
-				indent:  p.indent + elem.indent,
+				indent:  triple.indent + elem.indent,
+				mode:    triple.mode,
 				element: elem.element,
 			},
-		}, pairs[1:]...))
+		}, elems[1:]...))
 	case *joinElement:
-		return best(width, used, append([]*indentAndElement{
+		return format(width, used, append([]*fittingElement{
 			{
-				indent:  p.indent,
+				indent:  triple.indent,
+				mode:    triple.mode,
 				element: elem.left,
 			},
 			{
-				indent:  p.indent,
+				indent:  triple.indent,
+				mode:    triple.mode,
 				element: elem.right,
 			},
-		}, pairs[1:]...))
+		}, elems[1:]...))
 	case *groupElement:
-		return better(width, used,
-			best(width, used, append([]*indentAndElement{
+		flat := append([]*fittingElement{
+			{
+				indent:  triple.indent,
+				mode:    fittingModeFlat,
+				element: elem.element,
+			},
+		}, elems[1:]...)
+		if fit(width-used, flat) {
+			return format(width, used, flat)
+		} else {
+			return format(width, used, append([]*fittingElement{
 				{
-					indent:  p.indent,
-					element: elem.long,
+					indent:  triple.indent,
+					mode:    fittingModeBreak,
+					element: elem.element,
 				},
-			}, pairs[1:]...)),
-			best(width, used, append([]*indentAndElement{
-				{
-					indent:  p.indent,
-					element: elem.short,
-				},
-			}, pairs[1:]...)),
-		)
+			}, elems[1:]...))
+		}
 	}
 
-	return nil
+	return format(width, used, elems[1:])
+}
+
+func fit(width int, elems []*fittingElement) bool {
+	if width < 0 {
+		return false
+	}
+
+	if len(elems) == 0 {
+		return true
+	}
+
+	triple := elems[0]
+	switch elem := triple.element.(type) {
+	case *textElement:
+		return fit(width-len(elem.text), elems[1:])
+	case *lineElement:
+		if triple.mode == fittingModeFlat {
+			return fit(width-1, elems[1:])
+		}
+		return true
+	case *indentElement:
+		return fit(width, append([]*fittingElement{
+			{
+				indent:  triple.indent + elem.indent,
+				mode:    triple.mode,
+				element: elem.element,
+			},
+		}, elems[1:]...))
+	case *joinElement:
+		return fit(width, append([]*fittingElement{
+			{
+				indent:  triple.indent,
+				mode:    triple.mode,
+				element: elem.left,
+			},
+			{
+				indent:  triple.indent,
+				mode:    triple.mode,
+				element: elem.right,
+			},
+		}, elems[1:]...))
+	case *groupElement:
+		return fit(width, append([]*fittingElement{
+			{
+				indent:  triple.indent,
+				mode:    fittingModeFlat,
+				element: elem.element,
+			},
+		}, elems[1:]...))
+	}
+
+	return fit(width, elems[1:])
 }
 
 type document interface {
-	fits(width int) bool
 	layout(w io.Writer)
 }
 
@@ -203,18 +250,6 @@ func text(text string, doc document) document {
 	}
 }
 
-func (d *textDocument) fits(width int) bool {
-	if width < 0 {
-		return false
-	}
-
-	if d.doc == nil {
-		return true
-	}
-
-	return d.doc.fits(width - len(d.text))
-}
-
 func (d *textDocument) layout(w io.Writer) {
 	fmt.Fprint(w, d.text)
 	if d.doc != nil {
@@ -234,24 +269,9 @@ func line(depth int, doc document) document {
 	}
 }
 
-func (d *lineDocument) fits(width int) bool {
-	if width < 0 {
-		return false
-	}
-
-	return true
-}
-
 func (d *lineDocument) layout(w io.Writer) {
 	fmt.Fprintf(w, "\n%v", strings.Repeat(" ", d.depth))
 	if d.doc != nil {
 		d.doc.layout(w)
 	}
-}
-
-func better(width, used int, long, short document) document {
-	if long.fits(width - used) {
-		return long
-	}
-	return short
 }
